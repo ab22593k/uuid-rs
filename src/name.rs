@@ -1,12 +1,14 @@
-#![cfg(any(feature = "hash_md5", feauture = "hash_sha1"))]
+#![cfg(feature = "hmd5")]
+#![cfg(feature = "hsha1")]
 
 use md5;
-use sha1::Sha1;
+use sha1_smol::Sha1;
 
 use crate::{Layout, Variant, Version, UUID};
 
 impl UUID {
     /// Generate a UUID by hashing a namespace identifier and name uses MD5.
+    #[cfg(feature = "hmd5")]
     pub fn v3(any: &str, namespace: UUID) -> Layout {
         let hash = md5::compute(Self::data(any, namespace)).0;
         Layout {
@@ -24,6 +26,7 @@ impl UUID {
     }
 
     /// Generate a UUID by hashing a namespace identifier and name uses SHA1.
+    #[cfg(feature = "hsha1")]
     pub fn v5(any: &str, namespace: UUID) -> Layout {
         let hash = Sha1::from(Self::data(any, namespace)).digest().bytes();
         Layout {
@@ -65,33 +68,68 @@ macro_rules! v5 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_v3() {
-        let namespace = [
-            UUID::NAMESPACE_DNS,
-            UUID::NAMESPACE_OID,
-            UUID::NAMESPACE_URL,
-            UUID::NAMESPACE_X500,
-        ];
+    const TEST_NAMESPACES: [UUID; 4] = [
+        UUID::NAMESPACE_DNS,
+        UUID::NAMESPACE_OID,
+        UUID::NAMESPACE_URL,
+        UUID::NAMESPACE_X500,
+    ];
 
-        for s in namespace.iter() {
-            assert_eq!(UUID::v3("any", *s).get_version(), Some(Version::MD5));
-            assert_eq!(UUID::v3("any", *s).get_variant(), Some(Variant::RFC));
+    const TEST_STRINGS: [&str; 3] = ["test", "example", "sample"];
+
+    #[cfg(feature = "hmd5")]
+    #[test]
+    fn test_v3_basic() {
+        for &namespace in &TEST_NAMESPACES {
+            let uuid = UUID::v3("any", namespace);
+            assert_eq!(uuid.get_version(), Some(Version::MD5));
+            assert_eq!(uuid.get_variant(), Some(Variant::RFC));
         }
     }
 
+    #[cfg(feature = "hmd5")]
     #[test]
-    fn test_v5() {
-        let namespace = [
-            UUID::NAMESPACE_DNS,
-            UUID::NAMESPACE_OID,
-            UUID::NAMESPACE_URL,
-            UUID::NAMESPACE_X500,
-        ];
+    fn test_v3_deterministic() {
+        for &namespace in &TEST_NAMESPACES {
+            for &test_str in &TEST_STRINGS {
+                let uuid1 = UUID::v3(test_str, namespace);
+                let uuid2 = UUID::v3(test_str, namespace);
+                assert_eq!(uuid1, uuid2, "v3 UUIDs should be deterministic");
+            }
+        }
+    }
 
-        for s in namespace.iter() {
-            assert_eq!(UUID::v5("any", *s).get_version(), Some(Version::SHA1));
-            assert_eq!(UUID::v5("any", *s).get_variant(), Some(Variant::RFC));
+    #[cfg(feature = "hsha1")]
+    #[test]
+    fn test_v5_basic() {
+        for &namespace in &TEST_NAMESPACES {
+            let uuid = UUID::v5("any", namespace);
+            assert_eq!(uuid.get_version(), Some(Version::SHA1));
+            assert_eq!(uuid.get_variant(), Some(Variant::RFC));
+        }
+    }
+
+    #[cfg(feature = "hsha1")]
+    #[test]
+    fn test_v5_deterministic() {
+        for &namespace in &TEST_NAMESPACES {
+            for &test_str in &TEST_STRINGS {
+                let uuid1 = UUID::v5(test_str, namespace);
+                let uuid2 = UUID::v5(test_str, namespace);
+                assert_eq!(uuid1, uuid2, "v5 UUIDs should be deterministic");
+            }
+        }
+    }
+
+    #[cfg(all(feature = "hmd5", feature = "hsha1"))]
+    #[test]
+    fn test_v3_v5_different() {
+        for &namespace in &TEST_NAMESPACES {
+            for &test_str in &TEST_STRINGS {
+                let v3_uuid = UUID::v3(test_str, namespace);
+                let v5_uuid = UUID::v5(test_str, namespace);
+                assert_ne!(v3_uuid, v5_uuid, "v3 and v5 UUIDs should differ");
+            }
         }
     }
 }

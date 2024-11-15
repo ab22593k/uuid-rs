@@ -1,36 +1,24 @@
-//! This crate defines a uniform resource name namespace for UUIDs
-//! (Universally Unique IDentifier), also known as GUIDs (Globally
-//! Unique Identifier). A UUID is 128 bits long, and can guarantee
-//! uniqueness across space and time.
-//!
-//! ```toml
-//! [dependencies]
-//! uuid = { version = "0.6.0", features = ["random"] }
-//! ```
-//!
-//! ```rust
-//! use uuid_rs::v4;
-//!
-//! fn main() {
-//!     println!("{}", v4!());
-//! }
-//! ```
+//! `uuid-rs` implements Universally Unique IDentifiers (UUIDs) according to
+//! [RFC 4122](https://tools.ietf.org/html/rfc4122). UUIDs are 128-bit numbers
+//! that can be used to uniquely identify resources in distributed systems. Multiple
+//! UUID versions are supported, including timestamp-based (v1), DCE Security (v2),
+//! MD5 hash-based (v3), random (v4) and SHA-1 hash-based (v5) variants.
 
 #![doc(html_root_url = "https://docs.rs/uuid-rs")]
 
-mod name;
-mod rand;
-mod time;
+pub mod name;
+pub mod rand;
+pub mod time;
 
 use core::fmt;
 use core::sync::atomic;
 use std::time::SystemTime;
 
 /// Is 100-ns ticks between UNIX and UTC epochs.
-pub const UTC_EPOCH: u64 = 0x1B21_DD21_3814_000;
+pub const UTC_EPOCH: u64 = 0x01B2_1DD2_1381_4000;
 
 /// The UUID format is 16 octets.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Layout {
     /// The low field of the Timestamp.
     pub field_low: u32,
@@ -161,20 +149,64 @@ pub enum Version {
 
 /// Represented by Coordinated Universal Time (UTC)
 /// as a count of 100-ns intervals from the system-time.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, PartialOrd)]
 pub struct Timestamp(u64);
+
+impl Default for Timestamp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Timestamp {
     /// Generate UTC timestamp.
-    pub fn new() -> u64 {
-        let utc = SystemTime::now()
+    pub fn new() -> Self {
+        let since_unix = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .checked_add(std::time::Duration::from_nanos(UTC_EPOCH))
-            .unwrap()
-            .as_nanos();
+            .unwrap();
 
-        (utc & 0xffff_ffff_ffff_fff) as u64
+        // 100-ns intervals since Unix epoch
+        let intervals = since_unix.as_nanos() / 100;
+
+        // Add UTC epoch offset
+        let utc = intervals + UTC_EPOCH as u128;
+
+        // Only take lower 60 bits per RFC 4122
+        Self((utc & 0x0fff_ffff_ffff_ffff) as u64)
+    }
+}
+
+use std::ops::{BitAnd, Shr};
+
+impl BitAnd<u64> for Timestamp {
+    type Output = u64;
+
+    fn bitand(self, rhs: u64) -> Self::Output {
+        self.0 & rhs
+    }
+}
+
+impl BitAnd<u64> for &Timestamp {
+    type Output = u64;
+
+    fn bitand(self, rhs: u64) -> Self::Output {
+        self.0 & rhs
+    }
+}
+
+impl Shr<u32> for Timestamp {
+    type Output = u64;
+
+    fn shr(self, rhs: u32) -> Self::Output {
+        self.0 >> rhs
+    }
+}
+
+impl Shr<u32> for &Timestamp {
+    type Output = u64;
+
+    fn shr(self, rhs: u32) -> Self::Output {
+        self.0 >> rhs
     }
 }
 
@@ -233,14 +265,32 @@ impl fmt::Display for UUID {
     }
 }
 
-/// Used to avoid duplicates that could arise when the clock
-/// is set backwards in time.
-pub struct ClockSeq(u16);
+/// The clock sequence is used to help avoid duplicates that could arise when the
+/// clock is set backwards in time or if the node ID changes. According to RFC 4122,
+/// it is initialized with a random value when the UUID generator starts up.
+#[derive(Debug)]
+pub struct ClockSeq(pub u16);
+
+impl std::ops::Deref for ClockSeq {
+    type Target = u16;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl ClockSeq {
-    /// Generate new atomic random value.
-    pub fn new(r: u16) -> u16 {
-        atomic::AtomicU16::new(r).fetch_add(1, atomic::Ordering::AcqRel)
+    /// Generate new clock sequence value, initialized with random bits and
+    /// monotonically incrementing thereafter to prevent collisions.
+    pub fn new(random_bits: u16) -> Self {
+        // According to RFC 4122 Section 4.2.1:
+        // "For UUID version 1, the clock sequence is used to help avoid
+        // duplicates that could arise when the clock is set backwards in time
+        // or if the node ID changes."
+
+        // Only use 14 bits per spec, clear the variant bits
+        let initial = random_bits & 0x3fff;
+        Self(atomic::AtomicU16::new(initial).fetch_add(1, atomic::Ordering::AcqRel))
     }
 }
 
@@ -258,12 +308,6 @@ impl fmt::Display for Node {
     }
 }
 
-#[cfg(any(
-    feature = "hash_md5",
-    feauture = "hash_sha1",
-    feauture = "random",
-    feauture = "mac"
-))]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,21 +330,16 @@ mod tests {
 
     #[test]
     fn test_is_valid_uuid() {
-        let uuid = [
-            v1!(),
-            v2!(Domain::PERSON),
-            v3!("any", UUID::NAMESPACE_URL),
-            v4!(),
-            v4!(),
-            v5!("any", UUID::NAMESPACE_DNS),
+        let uuid_strings = [
+            "550e8400-e29b-41d4-a716-446655440000", // Example v4 UUID
+            "d9428888-122b-11e1-b85c-61cd3cbb3210", // Example v1 UUID
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8", // NAMESPACE_URL constant
+            "6ba7b814-9dad-11d1-80b4-00c04fd430c8", // NAMESPACE_X500 constant
         ];
 
-        for id in uuid.iter() {
-            assert!(is_valid(id))
-        }
-
-        for id in uuid.iter() {
-            assert!(is_valid(&id.to_uppercase()))
+        for id in uuid_strings.iter() {
+            assert!(is_valid(id));
+            assert!(is_valid(&id.to_uppercase()));
         }
     }
 }

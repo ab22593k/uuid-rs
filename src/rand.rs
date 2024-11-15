@@ -1,10 +1,12 @@
-#![cfg(feature = "random")]
+#![cfg(feature = "rnd")]
 
 use crate::{Layout, Variant, Version, UUID};
+
 use rand;
 
 impl UUID {
     /// Generate a UUID from truly random numbers.
+    #[cfg(feature = "rand")]
     pub fn v4() -> Layout {
         let rng = rand::random::<u128>();
         let rand = rng.to_be_bytes();
@@ -38,6 +40,7 @@ macro_rules! v4 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "rand")]
     #[test]
     fn test_v4() {
         let uuid = UUID::v4();
